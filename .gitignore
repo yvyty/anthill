@@ -1,0 +1,66 @@
+# =========================
+# Build Directories
+# =========================
+build/
+bin/
+out/
+
+# =========================
+# CMake specific files
+# =========================
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# =========================
+# Compiled binaries & objects
+# =========================
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+*.out
+*.app
+
+# Ignore the compiled macOS/Linux executable specifically for this project
+anthill
+
+# =========================
+# OS generated files
+# =========================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# =========================
+# Editor / IDE specific
+# =========================
+# VS Code
+.vscode/
+
+# Neovim / Vim
+*.swp
+*.swo
+*~
+
+# JetBrains (CLion)
+.idea/
+cmake-build-*/
