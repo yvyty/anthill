@@ -1,5 +1,7 @@
 # 🐜 Anthill
 
+[![Build and Release](https://github.com/yvyty/anthill/actions/workflows/release.yml/badge.svg)](https://github.com/yvyty/anthill/actions/workflows/release.yml) [![GitHub release](https://img.shields.io/github/v/release/yvyty/anthill.svg?color=success)](https://github.com/yvyty/anthill/releases) [![Language](https://img.shields.io/badge/Language-C11-%234c1.svg)](https://github.com/yvyty/anthill) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 **Anthill** is a lightweight, high-performance CLI tool written in native C that rapidly enumerates all bindable (available) ports on a host machine. 
 
 Instead of sequential, slow network polling, Anthill acts as a command center, deploying lightweight scout "ants" (workers) to map the terrain of your system's port availability across Linux, macOS, and Windows. 
