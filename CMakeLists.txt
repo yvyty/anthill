@@ -20,5 +20,5 @@ add_executable(anthill src/main.c)
 
 target_link_libraries(anthill PRIVATE Threads::Threads)
 if(WIN32)
-    target_link_libraries(anthill ws2_32)
+    target_link_libraries(anthill PRIVATE ws2_32)
 endif()
