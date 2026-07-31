@@ -1,0 +1,50 @@
+name: Build and Release Anthill
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: anthill-linux-amd64
+          - os: macos-latest
+            asset_name: anthill-macos-amd64
+          - os: windows-latest
+            asset_name: anthill-windows-amd64.exe
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Anthill
+        run: cmake --build build --config Release
+
+      - name: Prepare Artifact
+        shell: bash
+        run: |
+          # Windows MSVC creates a 'Release' subfolder, POSIX does not
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            mv build/Release/anthill.exe ${{ matrix.asset_name }}
+          else
+            mv build/anthill ${{ matrix.asset_name }}
+          fi
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
