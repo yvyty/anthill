@@ -64,3 +64,9 @@ $RECYCLE.BIN/
 # JetBrains (CLion)
 .idea/
 cmake-build-*/
+
+# Clangd / Editor caches
+.cache/
+
+# Neovim / Neovim
+*.swp

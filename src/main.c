@@ -1,8 +1,23 @@
 #include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include "../include/net_utils.h"
 
-#define NUM_THREADS 16
-#define MAX_PORT 65535
+#define MAX_THREADS 16
+#define DEFAULT_START_PORT 1
+#define DEFAULT_END_PORT 65535
+
+typedef enum {
+    FORMAT_HUMAN,
+    FORMAT_COUNT,
+    FORMAT_JSON
+} output_format_t;
+
+typedef struct {
+    int start_port;
+    int end_port;
+    output_format_t format;
+} app_config_t;
 
 typedef struct {
     int squadron_id;
@@ -10,6 +25,7 @@ typedef struct {
     int end_port;
     int *total_available;
     anthill_mutex_t *mutex;
+    output_format_t format;
 } worker_args_t;
 
 bool check_port_availability(int port){
@@ -43,45 +59,101 @@ ANTHILL_THREAD_FUNC ant_worker(void *arg) {
     *(args->total_available) += local_count;
     anthill_mutex_unlock(args->mutex);
 
-    printf("    -> Squadron %02d completed (Ports %d to %d). \n", args->squadron_id, args->start_port, args->end_port);
+    if (args->format == FORMAT_HUMAN){
+     printf("    -> Squadron %02d completed (Ports %d to %d). \n", args->squadron_id, args->start_port, args->end_port);
+    }
 
     return (ANTHILL_THREAD_RETURN)0;
 }
 
-int main(void) {
-    printf("Spawing Anthil...\n");
-    init_network_workers();
+app_config_t parse_arguments(int argc, char *argv[]) {
+    app_config_t config = {DEFAULT_START_PORT, DEFAULT_END_PORT, FORMAT_HUMAN};
+    for (int i = 1; i < argc; i++){
+        if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
+            if (sscanf(argv[i + 1], "%d-%d", &config.start_port, &config.end_port) != 2) {
+                fprintf(stderr, "Error: Invalid range format. Use -r START-END\n");
+                exit(EXIT_FAILURE);
+            }
+            if (config.start_port < 1 || config.end_port > 65535 || config.start_port > config.end_port) {
+                fprintf(stderr, "Error: Ports must be between 1 and 65535, start <= end.\n");
+                exit(EXIT_FAILURE);
+            }
+            i++;
+        } else if (strcmp(argv[i], "-c") == 0) {
+            config.format = FORMAT_COUNT;
+        } else if (strcmp(argv[i], "-j") == 0) {
+            config.format = FORMAT_JSON;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("USAGE: anthill [OPTIONS]\n");
+            printf("    -r START-END    Specify port range (default: 1-65535)\n");
+            printf("    -c              Output only the total count of available ports\n");
+            printf("    -j              Output in JSON format\n");
+            printf("    -h, --help      Show this help message\n");
+            exit(EXIT_SUCCESS);
+        }
+    }
+    return config;
+}
+
+int main(int argc, char *argv[]) {
+    app_config_t config = parse_arguments(argc, argv);
+
+    if (config.format == FORMAT_HUMAN) printf("Spawing Anthil...\n");
+
+#ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) exit(EXIT_FAILURE);
+#endif
 
     int total_available = 0;
     anthill_mutex_t counter_mutex;
     anthill_mutex_init(&counter_mutex);
 
-    anthill_thread_t threads[NUM_THREADS];
-    worker_args_t thread_args[NUM_THREADS];
+    int total_ports_to_scan = config.end_port - config.start_port + 1;
+    int active_threads = (total_ports_to_scan < MAX_THREADS) ? total_ports_to_scan : MAX_THREADS;
 
-    int ports_per_thread = MAX_PORT / NUM_THREADS;
+    anthill_thread_t threads[MAX_THREADS];
+    worker_args_t thread_args[MAX_THREADS];
 
-    printf("\nDeploying %d ant squadrons...\n", NUM_THREADS);
+    int ports_per_thread = total_ports_to_scan / active_threads;
 
-    for (int i = 0; i < NUM_THREADS; i++) {
+    if (config.format == FORMAT_HUMAN) {
+        printf("Deploying %d ant squadrons to check ports %d-%d...\n", active_threads, config.start_port, config.end_port);
+    }
+
+    for (int i = 0; i < active_threads; i++){
         thread_args[i].squadron_id = i + 1;
-        thread_args[i].start_port = (i * ports_per_thread) + 1;
-
-        thread_args[i].end_port = (i == NUM_THREADS - 1) ? MAX_PORT : ((i + 1) * ports_per_thread);
+        thread_args[i].start_port = config.start_port + (i * ports_per_thread);
+        thread_args[i].end_port = (i == active_threads - 1) ? config.end_port : (thread_args[i].start_port + ports_per_thread - 1);
         thread_args[i].total_available = &total_available;
         thread_args[i].mutex = &counter_mutex;
+        thread_args[i].format = config.format;
 
         anthill_thread_create(&threads[i], ant_worker, &thread_args[i]);
     }
 
-    for (int i = 0; i < NUM_THREADS; i++) {
+    for (int i = 0; i < active_threads; i++) {
         anthill_thread_join(threads[i]);
     }
 
     anthill_mutex_destroy(&counter_mutex);
-    printf("Anthill dormant. All ants returned.\n");
-    printf("Total available ports on localhost: %d\n", total_available);
 
-    cleanup_network_workers();
+    if(config.format == FORMAT_HUMAN) {
+        printf("\nAnthill dormant. All ants returned.\n");
+        printf("Total available ports: %d\n", total_available);
+    } else if(config.format == FORMAT_COUNT) {
+        printf("%d\n", total_available);
+    } else if (config.format == FORMAT_JSON) {
+        printf("{\n");
+        printf("    \"start_port: %d,\n", config.start_port);
+        printf("    \"end_port: %d,\n", config.end_port);
+        printf("    \"available_ports: %d\n", total_available);
+        printf("}\n");
+    }
+
+#ifdef _WIN32
+    WSACleanup();
+#endif
+
     return 0;
 }
