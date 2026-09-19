@@ -117,7 +117,8 @@
             exit(EXIT_FAILURE);
         }
 
-        printf(
+        fprintf(
+            stderr,
             "[Anthill] Winsock initialized. Ants are ready.\n"
         );
     }
@@ -210,7 +211,8 @@
 
     static inline void init_network_workers(void)
     {
-        printf(
+        fprintf(
+            stderr,
             "[Anthill] POSIX network ready. Ants are ready.\n"
         );
     }

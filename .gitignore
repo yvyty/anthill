@@ -70,3 +70,6 @@ cmake-build-*/
 
 # Neovim / Neovim
 *.swp
+
+# Plan
+.plan/
