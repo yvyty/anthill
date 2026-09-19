@@ -2,7 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "args.h"
 #include "net_utils.h"
+#include "port_set.h"
+#include "scan.h"
 
 #define MAX_THREADS 16
 #define DEFAULT_START_PORT 1
@@ -18,6 +21,13 @@ typedef struct {
     int start_port;
     int end_port;
     output_format_t format;
+    bool list_ports;
+    const char *output_path;
+
+    port_set_t include_ports;
+    port_set_t exclude_ports;
+    bool has_include;
+    bool has_exclude;
 } app_config_t;
 
 typedef struct {
@@ -28,13 +38,28 @@ typedef struct {
     int *total_available;
     anthill_mutex_t *mutex;
 
+    const port_set_t *include_ports;
+    const port_set_t *exclude_ports;
+
     output_format_t format;
+
+    port_list_t results;
+    bool failed;
 } worker_args_t;
 
 
 static app_config_t parse_arguments(int argc, char *argv[]);
 
+static void print_help(void);
+
 static bool check_port_availability(int port);
+
+static void print_results(
+    FILE *out,
+    const app_config_t *config,
+    const port_list_t *ports,
+    int total_available
+);
 
 static ANTHILL_THREAD_FUNC ant_worker(void *arg);
 
@@ -78,57 +103,172 @@ static ANTHILL_THREAD_FUNC ant_worker(void *arg)
 {
     worker_args_t *args = (worker_args_t *)arg;
 
-    int local_count = 0;
+    /*
+     * The squadron builds its list in a private buffer; the shared count is
+     * the only thing merged under the mutex, so there is no per-port locking.
+     */
+    int available = scan_collect_available(
+        args->start_port,
+        args->end_port,
+        args->include_ports,
+        args->exclude_ports,
+        check_port_availability,
+        &args->results
+    );
 
-    for (
-        int port = args->start_port;
-        port <= args->end_port;
-        port++
-    ) {
-        if (check_port_availability(port)) {
-            local_count++;
-        }
+    if (available < 0) {
+        args->failed = true;
+    } else {
+        anthill_mutex_lock(args->mutex);
+
+        *(args->total_available) += available;
+
+        anthill_mutex_unlock(args->mutex);
     }
 
-    anthill_mutex_lock(args->mutex);
-
-    *(args->total_available) += local_count;
-
-    anthill_mutex_unlock(args->mutex);
-
     if (args->format == FORMAT_HUMAN) {
-        printf(
+        /* Serialize progress lines so squadrons never interleave mid-line. */
+        anthill_mutex_lock(args->mutex);
+
+        fprintf(
+            stderr,
             "    -> Squadron %02d completed (Ports %d to %d).\n",
             args->squadron_id,
             args->start_port,
             args->end_port
         );
+
+        anthill_mutex_unlock(args->mutex);
     }
 
     return (ANTHILL_THREAD_RETURN)0;
 }
 
+static void print_help(void)
+{
+    printf("USAGE:\n");
+    printf("    anthill [OPTIONS]\n\n");
+
+    printf("OPTIONS:\n");
+    printf(
+        "    -r START-END    Specify port range "
+        "(default: 1-65535)\n"
+    );
+
+    printf(
+        "    -c              Output only the total "
+        "count of available ports\n"
+    );
+
+    printf(
+        "    -j              Output result as JSON\n"
+    );
+
+    printf(
+        "    --list          List every available port "
+        "(default for human output)\n"
+    );
+
+    printf(
+        "    --no-list       Suppress the per-port "
+        "listing\n"
+    );
+
+    printf(
+        "    -o PATH         Write results to PATH "
+        "instead of stdout\n"
+    );
+
+    printf(
+        "    -x PORTS        Exclude ports, e.g. "
+        "-x 22,80,8000-9000\n"
+    );
+
+    printf(
+        "    -i PORTS        Only check these ports, "
+        "e.g. -i 80,443\n"
+    );
+
+    printf(
+        "    -h, --help      Show this help message\n"
+    );
+}
+
+static void print_results(
+    FILE *out,
+    const app_config_t *config,
+    const port_list_t *ports,
+    int total_available
+)
+{
+    if (config->format == FORMAT_COUNT) {
+        fprintf(
+            out,
+            "%d\n",
+            total_available
+        );
+
+        return;
+    }
+
+    if (config->format == FORMAT_JSON) {
+        fprintf(out, "{\n");
+
+        fprintf(
+            out,
+            "    \"start_port\": %d,\n",
+            config->start_port
+        );
+
+        fprintf(
+            out,
+            "    \"end_port\": %d,\n",
+            config->end_port
+        );
+
+        fprintf(
+            out,
+            "    \"available_ports\": %d\n",
+            total_available
+        );
+
+        fprintf(out, "}\n");
+
+        return;
+    }
+
+    if (config->list_ports) {
+        print_port_list(out, ports);
+    }
+
+    fprintf(
+        out,
+        "Total available ports: %d\n",
+        total_available
+    );
+}
+
 static app_config_t parse_arguments(int argc, char *argv[])
 {
     app_config_t config = {
-        DEFAULT_START_PORT,
-        DEFAULT_END_PORT,
-        FORMAT_HUMAN
+        .start_port = DEFAULT_START_PORT,
+        .end_port = DEFAULT_END_PORT,
+        .format = FORMAT_HUMAN,
+        .list_ports = true,
+        .output_path = NULL,
+        .has_include = false,
+        .has_exclude = false
     };
 
+    port_set_init(&config.include_ports);
+    port_set_init(&config.exclude_ports);
+
+    /* Tri-state: -1 means the user did not choose; resolve from the format. */
+    int list_flag = -1;
+
     for (int i = 1; i < argc; i++) {
-        if (
-            strcmp(argv[i], "-r") == 0 &&
-            i + 1 < argc
-        ) {
-            if (
-                sscanf(
-                    argv[i + 1],
-                    "%d-%d",
-                    &config.start_port,
-                    &config.end_port
-                ) != 2
-            ) {
+        if (strcmp(argv[i], "-r") == 0) {
+            if (i + 1 >= argc) {
                 fprintf(
                     stderr,
                     "Error: Invalid range format.\n"
@@ -139,14 +279,17 @@ static app_config_t parse_arguments(int argc, char *argv[])
             }
 
             if (
-                config.start_port < 1 ||
-                config.end_port > 65535 ||
-                config.start_port > config.end_port
+                !parse_port_range(
+                    argv[i + 1],
+                    &config.start_port,
+                    &config.end_port
+                )
             ) {
                 fprintf(
                     stderr,
-                    "Error: Ports must be between 1 and 65535 "
-                    "and START must be <= END.\n"
+                    "Error: Invalid range format: %s\n"
+                    "Use: -r START-END\n",
+                    argv[i + 1]
                 );
 
                 exit(EXIT_FAILURE);
@@ -163,31 +306,88 @@ static app_config_t parse_arguments(int argc, char *argv[])
             config.format = FORMAT_JSON;
         }
 
+        else if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(
+                    stderr,
+                    "Error: Option -o requires a file path.\n"
+                    "Run 'anthill --help' for usage information.\n"
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            config.output_path = argv[i + 1];
+            i++;
+        }
+
+        else if (strcmp(argv[i], "-x") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(
+                    stderr,
+                    "Error: Option -x requires a port list.\n"
+                    "Run 'anthill --help' for usage information.\n"
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            if (!parse_port_list(argv[i + 1], &config.exclude_ports)) {
+                fprintf(
+                    stderr,
+                    "Error: Invalid port list for -x: %s\n"
+                    "Use comma-separated ports and ranges, "
+                    "e.g. -x 22,80,8000-9000\n",
+                    argv[i + 1]
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            config.has_exclude = true;
+            i++;
+        }
+
+        else if (strcmp(argv[i], "-i") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(
+                    stderr,
+                    "Error: Option -i requires a port list.\n"
+                    "Run 'anthill --help' for usage information.\n"
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            if (!parse_port_list(argv[i + 1], &config.include_ports)) {
+                fprintf(
+                    stderr,
+                    "Error: Invalid port list for -i: %s\n"
+                    "Use comma-separated ports and ranges, "
+                    "e.g. -i 80,443\n",
+                    argv[i + 1]
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            config.has_include = true;
+            i++;
+        }
+
+        else if (strcmp(argv[i], "--list") == 0) {
+            list_flag = 1;
+        }
+
+        else if (strcmp(argv[i], "--no-list") == 0) {
+            list_flag = 0;
+        }
+
         else if (
             strcmp(argv[i], "-h") == 0 ||
             strcmp(argv[i], "--help") == 0
         ) {
-            printf("USAGE:\n");
-            printf("    anthill [OPTIONS]\n\n");
-
-            printf("OPTIONS:\n");
-            printf(
-                "    -r START-END    Specify port range "
-                "(default: 1-65535)\n"
-            );
-
-            printf(
-                "    -c              Output only the total "
-                "count of available ports\n"
-            );
-
-            printf(
-                "    -j              Output result as JSON\n"
-            );
-
-            printf(
-                "    -h, --help      Show this help message\n"
-            );
+            print_help();
 
             exit(EXIT_SUCCESS);
         }
@@ -208,6 +408,10 @@ static app_config_t parse_arguments(int argc, char *argv[])
         }
     }
 
+    config.list_ports = list_flag < 0
+        ? config.format == FORMAT_HUMAN
+        : list_flag != 0;
+
     return config;
 }
 
@@ -216,8 +420,24 @@ int main(int argc, char *argv[])
 {
     app_config_t config = parse_arguments(argc, argv);
 
+    FILE *out = stdout;
+
+    if (config.output_path != NULL) {
+        out = fopen(config.output_path, "w");
+
+        if (out == NULL) {
+            fprintf(
+                stderr,
+                "Error: Cannot write to output file: %s\n",
+                config.output_path
+            );
+
+            return EXIT_FAILURE;
+        }
+    }
+
     if (config.format == FORMAT_HUMAN) {
-        printf("Spawning Anthill...\n");
+        fprintf(stderr, "Spawning Anthill...\n");
     }
 
     init_network_workers();
@@ -239,9 +459,20 @@ int main(int argc, char *argv[])
     int ports_per_thread =
         total_ports_to_scan / active_threads;
 
+    const port_set_t *include_ports =
+        config.has_include
+            ? &config.include_ports
+            : NULL;
+
+    const port_set_t *exclude_ports =
+        config.has_exclude
+            ? &config.exclude_ports
+            : NULL;
+
 
     if (config.format == FORMAT_HUMAN) {
-        printf(
+        fprintf(
+            stderr,
             "Deploying %d ant squadrons to check ports %d-%d...\n",
             active_threads,
             config.start_port,
@@ -272,7 +503,12 @@ int main(int argc, char *argv[])
 
         args->total_available = &total_available;
         args->mutex = &counter_mutex;
+        args->include_ports = include_ports;
+        args->exclude_ports = exclude_ports;
         args->format = config.format;
+        args->failed = false;
+
+        port_list_init(&args->results);
 
 
         int thread_result = anthill_thread_create(
@@ -292,9 +528,17 @@ int main(int argc, char *argv[])
                 anthill_thread_join(threads[j]);
             }
 
+            for (int j = 0; j < created_threads; j++) {
+                port_list_free(&thread_args[j].results);
+            }
+
             anthill_mutex_destroy(&counter_mutex);
 
             cleanup_network_workers();
+
+            if (out != stdout) {
+                fclose(out);
+            }
 
             return EXIT_FAILURE;
         }
@@ -308,44 +552,73 @@ int main(int argc, char *argv[])
 
     anthill_mutex_destroy(&counter_mutex);
 
-    if (config.format == FORMAT_HUMAN) {
+    /*
+     * Merge squadron listings. Each worker owns its own buffer and its slot in
+     * thread_args, so no lock is needed here. Squadrons already cover disjoint
+     * ascending sub-ranges, but a final sort guarantees strictly ascending
+     * output even if ranges or filters change later.
+     */
+    port_list_t merged_ports;
+    port_list_init(&merged_ports);
 
-        printf(
+    bool merge_failed = false;
+
+    for (int i = 0; i < created_threads; i++) {
+        worker_args_t *args = &thread_args[i];
+
+        if (!merge_failed) {
+            for (int j = 0; j < args->results.count; j++) {
+                if (!port_list_push(&merged_ports, args->results.ports[j])) {
+                    merge_failed = true;
+                    break;
+                }
+            }
+        }
+
+        if (args->failed) {
+            merge_failed = true;
+        }
+
+        port_list_free(&args->results);
+    }
+
+    if (merge_failed) {
+        fprintf(
+            stderr,
+            "Error: Ran out of memory while collecting results.\n"
+        );
+
+        port_list_free(&merged_ports);
+
+        cleanup_network_workers();
+
+        if (out != stdout) {
+            fclose(out);
+        }
+
+        return EXIT_FAILURE;
+    }
+
+    port_list_sort(&merged_ports);
+
+    if (config.format == FORMAT_HUMAN) {
+        fprintf(
+            stderr,
             "\nAnthill dormant. All ants returned.\n"
         );
+    }
 
-        printf(
-            "Total available ports: %d\n",
-            total_available
-        );
+    print_results(
+        out,
+        &config,
+        &merged_ports,
+        total_available
+    );
 
-    } else if (config.format == FORMAT_COUNT) {
+    port_list_free(&merged_ports);
 
-        printf(
-            "%d\n",
-            total_available
-        );
-
-    } else if (config.format == FORMAT_JSON) {
-
-        printf("{\n");
-
-        printf(
-            "    \"start_port\": %d,\n",
-            config.start_port
-        );
-
-        printf(
-            "    \"end_port\": %d,\n",
-            config.end_port
-        );
-
-        printf(
-            "    \"available_ports\": %d\n",
-            total_available
-        );
-
-        printf("}\n");
+    if (out != stdout) {
+        fclose(out);
     }
 
     cleanup_network_workers();
