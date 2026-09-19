@@ -139,3 +139,37 @@ bool parse_port_list(const char *text, port_set_t *set)
 
     return true;
 }
+
+bool parse_thread_count(const char *text, int *thread_count)
+{
+    if (
+        text == NULL ||
+        thread_count == NULL ||
+        *text == '\0' ||
+        text[0] < '0' ||
+        text[0] > '9'
+    ) {
+        return false;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+    long value = strtol(text, &end, 10);
+
+    if (end == text || *end != '\0' || errno == ERANGE) {
+        return false;
+    }
+
+    if (value < 1) {
+        return false;
+    }
+
+    if (value > MAX_THREADS_CAP) {
+        value = MAX_THREADS_CAP;
+    }
+
+    *thread_count = (int)value;
+
+    return true;
+}

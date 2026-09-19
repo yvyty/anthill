@@ -98,7 +98,7 @@
      * Winsock lifecycle
      */
 
-    static inline void init_network_workers(void)
+    static inline void init_network_workers(bool verbose)
     {
         WSADATA wsa_data;
 
@@ -117,10 +117,12 @@
             exit(EXIT_FAILURE);
         }
 
-        fprintf(
-            stderr,
-            "[Anthill] Winsock initialized. Ants are ready.\n"
-        );
+        if (verbose) {
+            fprintf(
+                stderr,
+                "[Anthill] Winsock initialized. Ants are ready.\n"
+            );
+        }
     }
 
     static inline void cleanup_network_workers(void)
@@ -209,8 +211,12 @@
      * POSIX networking requires no explicit initialization.
      */
 
-    static inline void init_network_workers(void)
+    static inline void init_network_workers(bool verbose)
     {
+        if (!verbose) {
+            return;
+        }
+
         fprintf(
             stderr,
             "[Anthill] POSIX network ready. Ants are ready.\n"

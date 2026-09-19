@@ -6,6 +6,13 @@
 #include "port_set.h"
 
 /*
+ * Default squadron count when the user does not pass -t, and the hard ceiling
+ * that larger requested values are clamped to.
+ */
+#define MAX_THREADS 16
+#define MAX_THREADS_CAP 256
+
+/*
  * Pure, side-effect-free argument helpers.
  *
  * They report failure with a `false` return instead of calling exit(), which
@@ -31,5 +38,11 @@ bool parse_port_range(
  * partial additions matter.
  */
 bool parse_port_list(const char *text, port_set_t *set);
+
+/*
+ * Parses a thread count. Returns false for empty, non-numeric, or zero/negative
+ * input. Values above MAX_THREADS_CAP are accepted but clamped down to it.
+ */
+bool parse_thread_count(const char *text, int *thread_count);
 
 #endif

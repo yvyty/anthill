@@ -26,6 +26,7 @@
 
 #define COMMAND_SIZE 1024
 #define STDOUT_SIZE 512
+#define STDERR_SIZE 8192
 
 static int run_anthill(const char *arguments, char *buffer, size_t size)
 {
@@ -49,11 +50,12 @@ static int run_anthill(const char *arguments, char *buffer, size_t size)
         size_t read = fread(buffer, 1, size - 1, pipe);
 
         buffer[read] = '\0';
-    } else {
-        char discard[256];
+    }
 
-        while (fread(discard, 1, sizeof(discard), pipe) > 0) {
-        }
+    /* Drain whatever did not fit so the child never blocks on a full pipe. */
+    char discard[256];
+
+    while (fread(discard, 1, sizeof(discard), pipe) > 0) {
     }
 
     int status = PCLOSE(pipe);
@@ -113,6 +115,47 @@ static void make_temp_path(char *buffer, size_t size)
     );
 }
 
+static void make_stderr_path(char *buffer, size_t size)
+{
+    char base_path[512];
+
+    make_temp_path(base_path, sizeof(base_path));
+
+    snprintf(buffer, size, "%s.err", base_path);
+}
+
+static bool read_file_contents(const char *path, char *buffer, size_t size)
+{
+    FILE *file = fopen(path, "r");
+
+    if (file == NULL) {
+        return false;
+    }
+
+    size_t read = fread(buffer, 1, size - 1, file);
+
+    buffer[read] = '\0';
+
+    fclose(file);
+
+    return true;
+}
+
+static bool file_is_empty(const char *path)
+{
+    FILE *file = fopen(path, "r");
+
+    if (file == NULL) {
+        return false;
+    }
+
+    int character = fgetc(file);
+
+    fclose(file);
+
+    return character == EOF;
+}
+
 static void test_count_output(void)
 {
     char output[STDOUT_SIZE];
@@ -154,6 +197,8 @@ static void test_help_documents_flags(void)
     TEST_CHECK(strstr(output, "-o PATH") != NULL);
     TEST_CHECK(strstr(output, "-x PORTS") != NULL);
     TEST_CHECK(strstr(output, "-i PORTS") != NULL);
+    TEST_CHECK(strstr(output, "--threads N") != NULL);
+    TEST_CHECK(strstr(output, "--progress") != NULL);
 }
 
 static void test_file_output(void)
@@ -346,6 +391,138 @@ static void test_invalid_flags_fail(void)
     );
 }
 
+static void test_thread_count_single_thread_matches_many(void)
+{
+    char output[STDOUT_SIZE];
+    char multi[STDOUT_SIZE];
+
+    TEST_CHECK(
+        run_anthill("-c -r 1-500 -t 1", output, sizeof(output)) == 0
+    );
+    TEST_CHECK(is_single_integer(output));
+
+    TEST_CHECK(
+        run_anthill("-c -r 1-500 -t 8", multi, sizeof(multi)) == 0
+    );
+    TEST_CHECK(is_single_integer(multi));
+    TEST_CHECK(strcmp(output, multi) == 0);
+}
+
+static void test_thread_count_matches_banner(void)
+{
+    char output[STDOUT_SIZE * 4];
+
+    TEST_CHECK(
+        run_anthill("-r 1-64 -t 64 2>&1", output, sizeof(output)) == 0
+    );
+    TEST_CHECK(strstr(output, "Deploying 64 ant squadrons") != NULL);
+}
+
+static void test_thread_count_accepts_cap(void)
+{
+    char output[STDOUT_SIZE];
+
+    TEST_CHECK(
+        run_anthill("-c -r 1-512 -t 256", output, sizeof(output)) == 0
+    );
+    TEST_CHECK(is_single_integer(output));
+}
+
+static void test_thread_count_clamps_large(void)
+{
+    char output[STDOUT_SIZE];
+
+    TEST_CHECK(
+        run_anthill("-c -r 1-64 -t 99999", output, sizeof(output)) == 0
+    );
+    TEST_CHECK(is_single_integer(output));
+}
+
+static void test_thread_count_rejects_invalid(void)
+{
+    char output[STDOUT_SIZE];
+
+    TEST_CHECK(run_anthill("-r 1-1 -t 0", output, sizeof(output)) != 0);
+    TEST_CHECK(run_anthill("-r 1-1 -t abc", output, sizeof(output)) != 0);
+    TEST_CHECK(run_anthill("-r 1-1 -t", output, sizeof(output)) != 0);
+    TEST_CHECK(
+        run_anthill("-r 1-1 --threads 0", output, sizeof(output)) != 0
+    );
+}
+
+static void test_progress_suppressed_without_flag(void)
+{
+    char err_path[512];
+    char output[STDOUT_SIZE];
+    char command[COMMAND_SIZE];
+
+    make_stderr_path(err_path, sizeof(err_path));
+    remove(err_path);
+
+    snprintf(command, sizeof(command), "-j -r 1-1 2> \"%s\"", err_path);
+
+    TEST_CHECK(run_anthill(command, output, sizeof(output)) == 0);
+    TEST_CHECK(output[0] == '{');
+    TEST_CHECK(file_is_empty(err_path));
+
+    remove(err_path);
+}
+
+static void test_progress_emits_when_requested(void)
+{
+    char err_path[512];
+    char output[STDOUT_SIZE];
+    char progress[STDERR_SIZE];
+    char command[COMMAND_SIZE];
+
+    make_stderr_path(err_path, sizeof(err_path));
+    remove(err_path);
+
+    snprintf(
+        command,
+        sizeof(command),
+        "-c -r 1-2000 --progress 2> \"%s\"",
+        err_path
+    );
+
+    TEST_CHECK(run_anthill(command, output, sizeof(output)) == 0);
+    TEST_CHECK(is_single_integer(output));
+
+    TEST_CHECK(read_file_contents(err_path, progress, sizeof(progress)));
+    TEST_CHECK(strstr(progress, "Progress:") != NULL);
+    TEST_CHECK(strstr(progress, "%") != NULL);
+
+    remove(err_path);
+}
+
+static void test_progress_json_only_on_stderr(void)
+{
+    char err_path[512];
+    char output[STDOUT_SIZE];
+    char progress[STDERR_SIZE];
+    char command[COMMAND_SIZE];
+
+    make_stderr_path(err_path, sizeof(err_path));
+    remove(err_path);
+
+    snprintf(
+        command,
+        sizeof(command),
+        "-j -r 1-1000 --progress 2> \"%s\"",
+        err_path
+    );
+
+    TEST_CHECK(run_anthill(command, output, sizeof(output)) == 0);
+    TEST_CHECK(output[0] == '{');
+    TEST_CHECK(strstr(output, "Progress") == NULL);
+
+    TEST_CHECK(read_file_contents(err_path, progress, sizeof(progress)));
+    TEST_CHECK(strstr(progress, "Progress:") != NULL);
+    TEST_CHECK(strstr(progress, "available_ports") == NULL);
+
+    remove(err_path);
+}
+
 int main(void)
 {
     test_count_output();
@@ -360,6 +537,14 @@ int main(void)
     test_include_limits_checked_ports();
     test_exclude_range_blocks_band();
     test_invalid_flags_fail();
+    test_thread_count_single_thread_matches_many();
+    test_thread_count_matches_banner();
+    test_thread_count_accepts_cap();
+    test_thread_count_clamps_large();
+    test_thread_count_rejects_invalid();
+    test_progress_suppressed_without_flag();
+    test_progress_emits_when_requested();
+    test_progress_json_only_on_stderr();
 
     return test_summary("test_cli");
 }

@@ -7,7 +7,6 @@
 #include "port_set.h"
 #include "scan.h"
 
-#define MAX_THREADS 16
 #define DEFAULT_START_PORT 1
 #define DEFAULT_END_PORT 65535
 
@@ -23,12 +22,21 @@ typedef struct {
     output_format_t format;
     bool list_ports;
     const char *output_path;
+    int thread_count;
+    bool progress;
 
     port_set_t include_ports;
     port_set_t exclude_ports;
     bool has_include;
     bool has_exclude;
 } app_config_t;
+
+typedef struct {
+    int *scanned;
+    int total;
+    int last_percent;
+    anthill_mutex_t *mutex;
+} progress_state_t;
 
 typedef struct {
     int squadron_id;
@@ -42,6 +50,9 @@ typedef struct {
     const port_set_t *exclude_ports;
 
     output_format_t format;
+
+    scan_progress_fn on_progress;
+    void *progress_context;
 
     port_list_t results;
     bool failed;
@@ -62,6 +73,8 @@ static void print_results(
 );
 
 static ANTHILL_THREAD_FUNC ant_worker(void *arg);
+
+static void report_progress(int ports_scanned, void *context);
 
 
 static bool check_port_availability(int port)
@@ -113,6 +126,8 @@ static ANTHILL_THREAD_FUNC ant_worker(void *arg)
         args->include_ports,
         args->exclude_ports,
         check_port_availability,
+        args->on_progress,
+        args->progress_context,
         &args->results
     );
 
@@ -142,6 +157,40 @@ static ANTHILL_THREAD_FUNC ant_worker(void *arg)
     }
 
     return (ANTHILL_THREAD_RETURN)0;
+}
+
+static void report_progress(int ports_scanned, void *context)
+{
+    progress_state_t *state = (progress_state_t *)context;
+
+    if (state == NULL) {
+        return;
+    }
+
+    anthill_mutex_lock(state->mutex);
+
+    *(state->scanned) += ports_scanned;
+
+    int scanned = *(state->scanned);
+    int percent = state->total > 0
+        ? (int)(((long)scanned * 100L) / state->total)
+        : 100;
+
+    if (percent > state->last_percent) {
+        state->last_percent = percent;
+
+        fprintf(
+            stderr,
+            "Progress: %d%% (%d/%d ports scanned)\n",
+            percent,
+            scanned,
+            state->total
+        );
+
+        fflush(stderr);
+    }
+
+    anthill_mutex_unlock(state->mutex);
 }
 
 static void print_help(void)
@@ -187,6 +236,17 @@ static void print_help(void)
     printf(
         "    -i PORTS        Only check these ports, "
         "e.g. -i 80,443\n"
+    );
+
+    printf(
+        "    -t, --threads N Squadron count (default: 16, "
+        "max: %d; larger values are clamped)\n",
+        MAX_THREADS_CAP
+    );
+
+    printf(
+        "    --progress      Print periodic progress to "
+        "stderr\n"
     );
 
     printf(
@@ -256,6 +316,8 @@ static app_config_t parse_arguments(int argc, char *argv[])
         .format = FORMAT_HUMAN,
         .list_ports = true,
         .output_path = NULL,
+        .thread_count = MAX_THREADS,
+        .progress = false,
         .has_include = false,
         .has_exclude = false
     };
@@ -375,6 +437,39 @@ static app_config_t parse_arguments(int argc, char *argv[])
             i++;
         }
 
+        else if (
+            strcmp(argv[i], "-t") == 0 ||
+            strcmp(argv[i], "--threads") == 0
+        ) {
+            if (i + 1 >= argc) {
+                fprintf(
+                    stderr,
+                    "Error: Option -t requires a thread count.\n"
+                    "Run 'anthill --help' for usage information.\n"
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            if (!parse_thread_count(argv[i + 1], &config.thread_count)) {
+                fprintf(
+                    stderr,
+                    "Error: Invalid thread count: %s\n"
+                    "Use: -t N with N between 1 and %d\n",
+                    argv[i + 1],
+                    MAX_THREADS_CAP
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            i++;
+        }
+
+        else if (strcmp(argv[i], "--progress") == 0) {
+            config.progress = true;
+        }
+
         else if (strcmp(argv[i], "--list") == 0) {
             list_flag = 1;
         }
@@ -440,7 +535,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Spawning Anthill...\n");
     }
 
-    init_network_workers();
+    init_network_workers(config.format == FORMAT_HUMAN);
     int total_available = 0;
     anthill_mutex_t counter_mutex;
     anthill_mutex_init(&counter_mutex);
@@ -448,13 +543,50 @@ int main(int argc, char *argv[])
         config.end_port -
         config.start_port +
         1;
+    int requested_threads = config.thread_count > 0
+        ? config.thread_count
+        : MAX_THREADS;
     int active_threads =
-        total_ports_to_scan < MAX_THREADS
+        total_ports_to_scan < requested_threads
             ? total_ports_to_scan
-            : MAX_THREADS;
+            : requested_threads;
 
-    anthill_thread_t threads[MAX_THREADS];
-    worker_args_t thread_args[MAX_THREADS];
+    /* Sized from the live count so a raised ceiling cannot overflow. */
+    anthill_thread_t *threads = (anthill_thread_t *)malloc(
+        (size_t)active_threads * sizeof(anthill_thread_t)
+    );
+    worker_args_t *thread_args = (worker_args_t *)malloc(
+        (size_t)active_threads * sizeof(worker_args_t)
+    );
+
+    if (threads == NULL || thread_args == NULL) {
+        fprintf(
+            stderr,
+            "Error: Could not allocate %d squadrons.\n",
+            active_threads
+        );
+
+        free(threads);
+        free(thread_args);
+
+        anthill_mutex_destroy(&counter_mutex);
+
+        cleanup_network_workers();
+
+        if (out != stdout) {
+            fclose(out);
+        }
+
+        return EXIT_FAILURE;
+    }
+
+    int scanned_total = 0;
+    progress_state_t progress = {
+        .scanned = &scanned_total,
+        .total = total_ports_to_scan,
+        .last_percent = -1,
+        .mutex = &counter_mutex
+    };
 
     int ports_per_thread =
         total_ports_to_scan / active_threads;
@@ -506,6 +638,8 @@ int main(int argc, char *argv[])
         args->include_ports = include_ports;
         args->exclude_ports = exclude_ports;
         args->format = config.format;
+        args->on_progress = config.progress ? report_progress : NULL;
+        args->progress_context = config.progress ? &progress : NULL;
         args->failed = false;
 
         port_list_init(&args->results);
@@ -531,6 +665,9 @@ int main(int argc, char *argv[])
             for (int j = 0; j < created_threads; j++) {
                 port_list_free(&thread_args[j].results);
             }
+
+            free(threads);
+            free(thread_args);
 
             anthill_mutex_destroy(&counter_mutex);
 
@@ -590,6 +727,9 @@ int main(int argc, char *argv[])
 
         port_list_free(&merged_ports);
 
+        free(threads);
+        free(thread_args);
+
         cleanup_network_workers();
 
         if (out != stdout) {
@@ -616,6 +756,9 @@ int main(int argc, char *argv[])
     );
 
     port_list_free(&merged_ports);
+
+    free(threads);
+    free(thread_args);
 
     if (out != stdout) {
         fclose(out);

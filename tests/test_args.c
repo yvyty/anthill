@@ -70,10 +70,35 @@ static void test_parse_port_list(void)
     TEST_CHECK(!parse_port_list(NULL, &set));
 }
 
+static void test_parse_thread_count(void)
+{
+    int threads = 0;
+
+    TEST_CHECK(parse_thread_count("1", &threads));
+    TEST_CHECK(threads == 1);
+
+    TEST_CHECK(parse_thread_count("16", &threads));
+    TEST_CHECK(threads == 16);
+
+    TEST_CHECK(parse_thread_count("256", &threads));
+    TEST_CHECK(threads == MAX_THREADS_CAP);
+
+    TEST_CHECK(parse_thread_count("99999", &threads));
+    TEST_CHECK(threads == MAX_THREADS_CAP);
+
+    TEST_CHECK(!parse_thread_count("0", &threads));
+    TEST_CHECK(!parse_thread_count("abc", &threads));
+    TEST_CHECK(!parse_thread_count("-4", &threads));
+    TEST_CHECK(!parse_thread_count("12x", &threads));
+    TEST_CHECK(!parse_thread_count("", &threads));
+    TEST_CHECK(!parse_thread_count(NULL, &threads));
+}
+
 int main(void)
 {
     test_parse_port_range();
     test_parse_port_list();
+    test_parse_thread_count();
 
     return test_summary("test_args");
 }
