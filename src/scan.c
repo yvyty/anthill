@@ -77,6 +77,8 @@ int scan_collect_available(
     const port_set_t *include_ports,
     const port_set_t *exclude_ports,
     port_available_fn is_available,
+    scan_progress_fn on_progress,
+    void *progress_context,
     port_list_t *out
 )
 {
@@ -103,6 +105,10 @@ int scan_collect_available(
             port_set_contains(exclude_ports, port)
         ) {
             continue;
+        }
+
+        if (on_progress != NULL) {
+            on_progress(1, progress_context);
         }
 
         if (!is_available(port)) {

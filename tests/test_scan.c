@@ -30,6 +30,15 @@ static bool stub_targeted_ports(int port)
     return port == 80 || port == 443;
 }
 
+static int progress_total = 0;
+
+static void stub_progress(int ports_scanned, void *context)
+{
+    (void)context;
+
+    progress_total += ports_scanned;
+}
+
 static size_t capture_list(const port_list_t *list, char *buffer, size_t size)
 {
     FILE *sink = tmpfile();
@@ -66,6 +75,8 @@ static void test_collects_available_ports(void)
         NULL,
         NULL,
         stub_even_ports_available,
+        NULL,
+        NULL,
         &list
     );
 
@@ -91,6 +102,8 @@ static void test_prints_stubbed_list(void)
         NULL,
         NULL,
         stub_even_ports_available,
+        NULL,
+        NULL,
         &list
     );
 
@@ -121,6 +134,8 @@ static void test_empty_result_prints_nothing(void)
         NULL,
         NULL,
         stub_no_ports_available,
+        NULL,
+        NULL,
         &list
     );
 
@@ -150,6 +165,8 @@ static void test_include_filter(void)
         &include_ports,
         NULL,
         stub_even_ports_available,
+        NULL,
+        NULL,
         &list
     );
 
@@ -177,6 +194,8 @@ static void test_include_list_skips_ports_outside_list(void)
         &include_ports,
         NULL,
         stub_targeted_ports,
+        NULL,
+        NULL,
         &list
     );
 
@@ -204,6 +223,8 @@ static void test_exclude_filter(void)
         NULL,
         &exclude_ports,
         stub_even_ports_available,
+        NULL,
+        NULL,
         &list
     );
 
@@ -234,6 +255,8 @@ static void test_exclude_wins_over_include(void)
         &include_ports,
         &exclude_ports,
         stub_always_available,
+        NULL,
+        NULL,
         &list
     );
 
@@ -243,6 +266,58 @@ static void test_exclude_wins_over_include(void)
     TEST_CHECK(list.ports[1] == 8081);
     TEST_CHECK(list.ports[2] == 8083);
     TEST_CHECK(list.ports[3] == 8084);
+
+    port_list_free(&list);
+}
+
+static void test_progress_reports_every_probed_port(void)
+{
+    port_list_t list;
+
+    port_list_init(&list);
+    progress_total = 0;
+
+    int collected = scan_collect_available(
+        8080,
+        8085,
+        NULL,
+        NULL,
+        stub_no_ports_available,
+        stub_progress,
+        NULL,
+        &list
+    );
+
+    TEST_CHECK(collected == 0);
+    TEST_CHECK(progress_total == 6);
+
+    port_list_free(&list);
+}
+
+static void test_progress_skips_filtered_ports(void)
+{
+    port_set_t exclude_ports;
+    port_list_t list;
+
+    port_set_init(&exclude_ports);
+    port_set_add(&exclude_ports, 8082);
+
+    port_list_init(&list);
+    progress_total = 0;
+
+    int collected = scan_collect_available(
+        8080,
+        8085,
+        NULL,
+        &exclude_ports,
+        stub_no_ports_available,
+        stub_progress,
+        NULL,
+        &list
+    );
+
+    TEST_CHECK(collected == 0);
+    TEST_CHECK(progress_total == 5);
 
     port_list_free(&list);
 }
@@ -261,6 +336,8 @@ static void test_bad_arguments(void)
             NULL,
             NULL,
             NULL,
+            NULL,
+            NULL,
             &list
         ) == -1
     );
@@ -272,6 +349,8 @@ static void test_bad_arguments(void)
             NULL,
             NULL,
             stub_always_available,
+            NULL,
+            NULL,
             NULL
         ) == -1
     );
@@ -291,6 +370,8 @@ int main(void)
     test_include_list_skips_ports_outside_list();
     test_exclude_filter();
     test_exclude_wins_over_include();
+    test_progress_reports_every_probed_port();
+    test_progress_skips_filtered_ports();
     test_bad_arguments();
 
     return test_summary("test_scan");
