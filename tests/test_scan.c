@@ -6,27 +6,33 @@
 
 #define CAPTURE_SIZE 512
 
-static bool stub_even_ports_available(int port)
+static bool stub_even_ports_available(int port, void *context)
 {
+    (void)context;
+
     return port == 8080 || port == 8082 || port == 8084;
 }
 
-static bool stub_no_ports_available(int port)
+static bool stub_no_ports_available(int port, void *context)
 {
     (void)port;
+    (void)context;
 
     return false;
 }
 
-static bool stub_always_available(int port)
+static bool stub_always_available(int port, void *context)
 {
     (void)port;
+    (void)context;
 
     return true;
 }
 
-static bool stub_targeted_ports(int port)
+static bool stub_targeted_ports(int port, void *context)
 {
+    (void)context;
+
     return port == 80 || port == 443;
 }
 
@@ -77,6 +83,7 @@ static void test_collects_available_ports(void)
         stub_even_ports_available,
         NULL,
         NULL,
+        NULL,
         &list
     );
 
@@ -102,6 +109,7 @@ static void test_prints_stubbed_list(void)
         NULL,
         NULL,
         stub_even_ports_available,
+        NULL,
         NULL,
         NULL,
         &list
@@ -136,6 +144,7 @@ static void test_empty_result_prints_nothing(void)
         stub_no_ports_available,
         NULL,
         NULL,
+        NULL,
         &list
     );
 
@@ -167,6 +176,7 @@ static void test_include_filter(void)
         stub_even_ports_available,
         NULL,
         NULL,
+        NULL,
         &list
     );
 
@@ -196,6 +206,7 @@ static void test_include_list_skips_ports_outside_list(void)
         stub_targeted_ports,
         NULL,
         NULL,
+        NULL,
         &list
     );
 
@@ -223,6 +234,7 @@ static void test_exclude_filter(void)
         NULL,
         &exclude_ports,
         stub_even_ports_available,
+        NULL,
         NULL,
         NULL,
         &list
@@ -257,6 +269,7 @@ static void test_exclude_wins_over_include(void)
         stub_always_available,
         NULL,
         NULL,
+        NULL,
         &list
     );
 
@@ -283,6 +296,7 @@ static void test_progress_reports_every_probed_port(void)
         NULL,
         NULL,
         stub_no_ports_available,
+        NULL,
         stub_progress,
         NULL,
         &list
@@ -311,6 +325,7 @@ static void test_progress_skips_filtered_ports(void)
         NULL,
         &exclude_ports,
         stub_no_ports_available,
+        NULL,
         stub_progress,
         NULL,
         &list
@@ -338,6 +353,7 @@ static void test_bad_arguments(void)
             NULL,
             NULL,
             NULL,
+            NULL,
             &list
         ) == -1
     );
@@ -349,6 +365,7 @@ static void test_bad_arguments(void)
             NULL,
             NULL,
             stub_always_available,
+            NULL,
             NULL,
             NULL,
             NULL

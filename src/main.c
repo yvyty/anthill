@@ -9,6 +9,7 @@
 
 #define DEFAULT_START_PORT 1
 #define DEFAULT_END_PORT 65535
+#define DEFAULT_HOST "127.0.0.1"
 
 typedef enum {
     FORMAT_HUMAN,
@@ -24,6 +25,10 @@ typedef struct {
     const char *output_path;
     int thread_count;
     bool progress;
+
+    const char *host;
+    int timeout_ms;
+    protocol_t protocol;
 
     port_set_t include_ports;
     port_set_t exclude_ports;
@@ -49,6 +54,11 @@ typedef struct {
     const port_set_t *include_ports;
     const port_set_t *exclude_ports;
 
+    const struct sockaddr_in *target;
+    bool remote;
+    int timeout_ms;
+    protocol_t protocol;
+
     output_format_t format;
 
     scan_progress_fn on_progress;
@@ -64,6 +74,8 @@ static app_config_t parse_arguments(int argc, char *argv[]);
 static void print_help(void);
 
 static bool check_port_availability(int port);
+
+static bool probe_port(int port, void *context);
 
 static void print_results(
     FILE *out,
@@ -112,6 +124,35 @@ static bool check_port_availability(int port)
     return result == 0;
 }
 
+/*
+ * Dispatches a single port probe. Local TCP keeps the bind-based availability
+ * check; a remote host switches to connect-based reachability, which answers a
+ * different question (is the port serving?) and is bounded by the timeout.
+ * UDP is local-only in v1.
+ */
+static bool probe_port(int port, void *context)
+{
+    const worker_args_t *args = (const worker_args_t *)context;
+
+    if (args == NULL) {
+        return false;
+    }
+
+    if (args->protocol == PROTO_UDP) {
+        return check_udp_availability(port);
+    }
+
+    if (!args->remote) {
+        return check_port_availability(port);
+    }
+
+    return check_port_open_addr(
+        args->target,
+        port,
+        args->timeout_ms
+    );
+}
+
 static ANTHILL_THREAD_FUNC ant_worker(void *arg)
 {
     worker_args_t *args = (worker_args_t *)arg;
@@ -125,7 +166,8 @@ static ANTHILL_THREAD_FUNC ant_worker(void *arg)
         args->end_port,
         args->include_ports,
         args->exclude_ports,
-        check_port_availability,
+        probe_port,
+        args,
         args->on_progress,
         args->progress_context,
         &args->results
@@ -239,6 +281,24 @@ static void print_help(void)
     );
 
     printf(
+        "    --host HOST     Scan HOST instead of localhost "
+        "(default: %s)\n",
+        DEFAULT_HOST
+    );
+
+    printf(
+        "    --timeout MS    Connect timeout in milliseconds "
+        "for remote hosts\n"
+        "                    (default: %d, max: %d)\n",
+        DEFAULT_TIMEOUT_MS,
+        MAX_TIMEOUT_MS
+    );
+
+    printf(
+        "    -u, --udp       Check UDP ports instead of TCP\n"
+    );
+
+    printf(
         "    -t, --threads N Squadron count (default: 16, "
         "max: %d; larger values are clamped)\n",
         MAX_THREADS_CAP
@@ -251,6 +311,21 @@ static void print_help(void)
 
     printf(
         "    -h, --help      Show this help message\n"
+    );
+
+    printf(
+        "\n"
+        "SEMANTICS:\n"
+        "    Local TCP: available means the port can be bound, "
+        "i.e. it is not in use.\n"
+        "    Remote TCP: open means a connect() handshake completed "
+        "within --timeout.\n"
+        "    Local availability and remote reachability are "
+        "different questions.\n"
+        "    UDP: available means the local box can bind the port; "
+        "remote UDP is not\n"
+        "    supported in v1 because reachability cannot be "
+        "established reliably.\n"
     );
 }
 
@@ -318,6 +393,9 @@ static app_config_t parse_arguments(int argc, char *argv[])
         .output_path = NULL,
         .thread_count = MAX_THREADS,
         .progress = false,
+        .host = DEFAULT_HOST,
+        .timeout_ms = DEFAULT_TIMEOUT_MS,
+        .protocol = PROTO_TCP,
         .has_include = false,
         .has_exclude = false
     };
@@ -466,6 +544,68 @@ static app_config_t parse_arguments(int argc, char *argv[])
             i++;
         }
 
+        else if (strcmp(argv[i], "--host") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(
+                    stderr,
+                    "Error: Option --host requires a host name "
+                    "or address.\n"
+                    "Run 'anthill --help' for usage information.\n"
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            if (!parse_host(argv[i + 1])) {
+                fprintf(
+                    stderr,
+                    "Error: Invalid host: %s\n"
+                    "Use a host name or IPv4/IPv6 address, "
+                    "e.g. --host 192.168.1.10\n",
+                    argv[i + 1]
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            config.host = argv[i + 1];
+            i++;
+        }
+
+        else if (strcmp(argv[i], "--timeout") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(
+                    stderr,
+                    "Error: Option --timeout requires a value in "
+                    "milliseconds.\n"
+                    "Run 'anthill --help' for usage information.\n"
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            if (!parse_timeout(argv[i + 1], &config.timeout_ms)) {
+                fprintf(
+                    stderr,
+                    "Error: Invalid timeout: %s\n"
+                    "Use: --timeout MS with MS between 1 and %d\n",
+                    argv[i + 1],
+                    MAX_TIMEOUT_MS
+                );
+
+                exit(EXIT_FAILURE);
+            }
+
+            i++;
+        }
+
+        else if (
+            strcmp(argv[i], "-u") == 0 ||
+            strcmp(argv[i], "--udp") == 0
+        ) {
+            config.protocol = PROTO_UDP;
+        }
+
         else if (strcmp(argv[i], "--progress") == 0) {
             config.progress = true;
         }
@@ -536,6 +676,43 @@ int main(int argc, char *argv[])
     }
 
     init_network_workers(config.format == FORMAT_HUMAN);
+
+    struct sockaddr_in target;
+
+    if (!anthill_resolve_host(config.host, &target)) {
+        fprintf(
+            stderr,
+            "Error: Could not resolve host: %s\n",
+            config.host
+        );
+
+        cleanup_network_workers();
+
+        if (out != stdout) {
+            fclose(out);
+        }
+
+        return EXIT_FAILURE;
+    }
+
+    bool remote_target = !anthill_is_localhost_addr(&target);
+
+    if (config.protocol == PROTO_UDP && remote_target) {
+        fprintf(
+            stderr,
+            "Error: Remote UDP scanning is not supported; "
+            "--host must be loopback with -u.\n"
+        );
+
+        cleanup_network_workers();
+
+        if (out != stdout) {
+            fclose(out);
+        }
+
+        return EXIT_FAILURE;
+    }
+
     int total_available = 0;
     anthill_mutex_t counter_mutex;
     anthill_mutex_init(&counter_mutex);
@@ -637,6 +814,10 @@ int main(int argc, char *argv[])
         args->mutex = &counter_mutex;
         args->include_ports = include_ports;
         args->exclude_ports = exclude_ports;
+        args->target = &target;
+        args->remote = remote_target;
+        args->timeout_ms = config.timeout_ms;
+        args->protocol = config.protocol;
         args->format = config.format;
         args->on_progress = config.progress ? report_progress : NULL;
         args->progress_context = config.progress ? &progress : NULL;

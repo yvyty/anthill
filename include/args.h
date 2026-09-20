@@ -12,6 +12,21 @@
 #define MAX_THREADS 16
 #define MAX_THREADS_CAP 256
 
+/* Default and ceiling for the connect() timeout in milliseconds. */
+#define DEFAULT_TIMEOUT_MS 200
+#define MAX_TIMEOUT_MS 60000
+
+/* Longest accepted host string, matching the DNS name length limit. */
+#define HOST_MAX_LENGTH 253
+
+/*
+ * Scan protocols. TCP is the default; UDP selects the datagram probe.
+ */
+typedef enum {
+    PROTO_TCP,
+    PROTO_UDP
+} protocol_t;
+
 /*
  * Pure, side-effect-free argument helpers.
  *
@@ -44,5 +59,18 @@ bool parse_port_list(const char *text, port_set_t *set);
  * input. Values above MAX_THREADS_CAP are accepted but clamped down to it.
  */
 bool parse_thread_count(const char *text, int *thread_count);
+
+/*
+ * Validates a host string: non-empty, within HOST_MAX_LENGTH, and limited to
+ * DNS/IPv4/IPv6 characters (letters, digits, '.', '-', '_', ':'). Returns false
+ * for NULL, empty, overlong, or syntactically invalid input.
+ */
+bool parse_host(const char *text);
+
+/*
+ * Parses a connect timeout in milliseconds. Returns false for empty,
+ * non-numeric, or out-of-range input; accepted values are 1..MAX_TIMEOUT_MS.
+ */
+bool parse_timeout(const char *text, int *timeout_ms);
 
 #endif

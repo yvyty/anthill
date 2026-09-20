@@ -94,11 +94,50 @@ static void test_parse_thread_count(void)
     TEST_CHECK(!parse_thread_count(NULL, &threads));
 }
 
+static void test_parse_host(void)
+{
+    TEST_CHECK(parse_host("127.0.0.1"));
+    TEST_CHECK(parse_host("localhost"));
+    TEST_CHECK(parse_host("scanme.nmap.org"));
+    TEST_CHECK(parse_host("fe80::1"));
+    TEST_CHECK(parse_host("my-host_1.example"));
+
+    TEST_CHECK(!parse_host(NULL));
+    TEST_CHECK(!parse_host(""));
+    TEST_CHECK(!parse_host("bad host"));
+    TEST_CHECK(!parse_host("host/path"));
+    TEST_CHECK(!parse_host("host@example"));
+}
+
+static void test_parse_timeout(void)
+{
+    int timeout = 0;
+
+    TEST_CHECK(parse_timeout("1", &timeout));
+    TEST_CHECK(timeout == 1);
+
+    TEST_CHECK(parse_timeout("200", &timeout));
+    TEST_CHECK(timeout == 200);
+
+    TEST_CHECK(parse_timeout("60000", &timeout));
+    TEST_CHECK(timeout == MAX_TIMEOUT_MS);
+
+    TEST_CHECK(!parse_timeout("0", &timeout));
+    TEST_CHECK(!parse_timeout("60001", &timeout));
+    TEST_CHECK(!parse_timeout("-5", &timeout));
+    TEST_CHECK(!parse_timeout("abc", &timeout));
+    TEST_CHECK(!parse_timeout("12x", &timeout));
+    TEST_CHECK(!parse_timeout("", &timeout));
+    TEST_CHECK(!parse_timeout(NULL, &timeout));
+}
+
 int main(void)
 {
     test_parse_port_range();
     test_parse_port_list();
     test_parse_thread_count();
+    test_parse_host();
+    test_parse_timeout();
 
     return test_summary("test_args");
 }
