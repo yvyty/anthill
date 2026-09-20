@@ -14,7 +14,7 @@
  * threaded worker in src/main.c passes `check_port_availability`.
  */
 
-typedef bool (*port_available_fn)(int port);
+typedef bool (*port_available_fn)(int port, void *context);
 
 /*
  * Called once for every port that is actually probed, with the number of ports
@@ -44,6 +44,9 @@ void port_list_sort(port_list_t *list);
  * `include_ports`/`exclude_ports` may be NULL to disable that filter. An
  * excluded port is never probed even when it also appears in the include set.
  *
+ * `probe_context` is passed through to `is_available` untouched, letting the
+ * caller carry per-scan state (host, timeout, protocol) into the probe.
+ *
  * `on_progress` (optional) is invoked for every probed port, cancelled ports
  * excluded. `progress_context` is passed through untouched.
  *
@@ -56,6 +59,7 @@ int scan_collect_available(
     const port_set_t *include_ports,
     const port_set_t *exclude_ports,
     port_available_fn is_available,
+    void *probe_context,
     scan_progress_fn on_progress,
     void *progress_context,
     port_list_t *out

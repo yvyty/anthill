@@ -13,7 +13,13 @@ target_compile_definitions(
     PRIVATE ANTHILL_BINARY="$<TARGET_FILE:anthill>"
 )
 
-foreach(test_target test_args test_port_set test_scan test_cli)
+add_executable(test_net test_net.c)
+target_link_libraries(test_net PRIVATE anthill_core)
+if(WIN32)
+    target_link_libraries(test_net PRIVATE ws2_32)
+endif()
+
+foreach(test_target test_args test_port_set test_scan test_cli test_net)
     anthill_apply_warnings(${test_target})
 endforeach()
 
@@ -21,3 +27,5 @@ add_test(NAME args COMMAND test_args)
 add_test(NAME port_set COMMAND test_port_set)
 add_test(NAME scan COMMAND test_scan)
 add_test(NAME cli COMMAND test_cli)
+add_test(NAME net COMMAND test_net)
+set_tests_properties(net PROPERTIES LABELS network)

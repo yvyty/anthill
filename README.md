@@ -61,6 +61,28 @@ Total available ports on localhost: 65412
 
 ```
 
+## 🎯 Scanning remote hosts and UDP
+
+By default Anthill answers a **local** question: "can I bind this port?" A port
+is reported available when the bind succeeds, i.e. nothing is using it yet.
+
+Pass `--host` to point the scan at another machine. Remote scans answer a
+different question: "is something serving this port?" Anthill uses a
+non-blocking `connect()` bounded by `--timeout` (default 200 ms), so filtered
+ports fail fast instead of waiting on the OS default. The two modes are not
+interchangeable: a port can be free to bind locally yet unreachable remotely,
+and vice versa.
+
+```bash
+./anthill --host 192.168.1.10 -r 80-90 --timeout 500
+```
+
+`-u` / `--udp` switches to UDP. UDP has no handshake, so in v1 "available"
+means only that the **local** box can bind the port (`SOCK_DGRAM`). Remote UDP
+reachability cannot be established reliably, so `-u` is rejected together with
+a non-loopback `--host`. A datagram can be sent and silently dropped, which is
+indistinguishable from a closed port without ICMP feedback.
+
 ## 📜 License
 
 This project is open-source and available under the [MIT License](./LICENSE).

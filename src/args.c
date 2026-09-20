@@ -173,3 +173,66 @@ bool parse_thread_count(const char *text, int *thread_count)
 
     return true;
 }
+
+bool parse_host(const char *text)
+{
+    if (text == NULL || *text == '\0') {
+        return false;
+    }
+
+    size_t length = strlen(text);
+
+    if (length > HOST_MAX_LENGTH) {
+        return false;
+    }
+
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)text[i];
+
+        if (
+            (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '.' ||
+            c == '-' ||
+            c == ':' ||
+            c == '_'
+        ) {
+            continue;
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+bool parse_timeout(const char *text, int *timeout_ms)
+{
+    if (
+        text == NULL ||
+        timeout_ms == NULL ||
+        *text == '\0' ||
+        text[0] < '0' ||
+        text[0] > '9'
+    ) {
+        return false;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+    long value = strtol(text, &end, 10);
+
+    if (end == text || *end != '\0' || errno == ERANGE) {
+        return false;
+    }
+
+    if (value < 1 || value > MAX_TIMEOUT_MS) {
+        return false;
+    }
+
+    *timeout_ms = (int)value;
+
+    return true;
+}
