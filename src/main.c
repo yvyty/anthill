@@ -327,6 +327,18 @@ static void print_help(void)
         "    supported in v1 because reachability cannot be "
         "established reliably.\n"
     );
+
+    printf(
+        "\n"
+        "LIMITATIONS:\n"
+        "    Privileged ports: on POSIX, binding a port below 1024 "
+        "requires root.\n"
+        "    Without root those ports are reported unavailable even "
+        "when nothing is\n"
+        "    listening, so a low port may be a false negative rather "
+        "than a port that\n"
+        "    is genuinely in use.\n"
+    );
 }
 
 static void print_results(
