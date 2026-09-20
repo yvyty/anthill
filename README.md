@@ -43,23 +43,65 @@ Simply run the executable. The colony will deploy and return a status report of 
 
 ```bash
 ./anthill
-
 ```
 
-**Example Output:**
+Narrow the sweep with `-r`, and pick an output shape when a script is consuming
+the result:
+
+```bash
+./anthill -r 8080-8085    # scan a small range
+./anthill -c              # count only
+./anthill -j              # JSON
+./anthill -o available.txt  # write the report to a file
+```
+
+**Example Output** (`./anthill -r 8080-8085`):
 
 ```text
 Spawning Anthill...
 [Anthill] POSIX network ready. Ants are ready.
-Scout ants deploying to ports 1 through 65535...
+Deploying 6 ant squadrons to check ports 8080-8085...
+    -> Squadron 01 completed (Ports 8080 to 8080).
+    -> Squadron 02 completed (Ports 8081 to 8081).
+    -> Squadron 03 completed (Ports 8082 to 8082).
+    -> Squadron 04 completed (Ports 8083 to 8083).
+    -> Squadron 05 completed (Ports 8084 to 8084).
+    -> Squadron 06 completed (Ports 8085 to 8085).
 
-Port 80: [AVAILABLE]
-Port 81: [AVAILABLE]
-...
 Anthill dormant. All ants returned.
-Total available ports on localhost: 65412
-
+Available ports (6):
+    8080
+    8081
+    8082
+    8083
+    8084
+    8085
+Total available ports: 6
 ```
+
+Squadron progress and the "All ants returned" banner go to **stderr**, and each
+squadron prints when it finishes, so those lines can appear out of numeric
+order. The port listing and total go to **stdout** (or to `-o PATH`), so piping
+or redirecting the report never picks up the chatter.
+
+### Options
+
+| Flag | Argument | Description |
+| --- | --- | --- |
+| `-r` | `START-END` | Port range to scan (default: `1-65535`). |
+| `-c` | | Print only the total count of available ports. |
+| `-j` | | Emit the result as JSON (`start_port`, `end_port`, `available_ports`). |
+| `--list` | | List every available port (default for human output). |
+| `--no-list` | | Suppress the per-port listing. |
+| `-o` | `PATH` | Write results to `PATH` instead of stdout. |
+| `-x` | `PORTS` | Exclude ports, e.g. `-x 22,80,8000-9000`. |
+| `-i` | `PORTS` | Only check these ports, e.g. `-i 80,443`. |
+| `--host` | `HOST` | Scan `HOST` instead of localhost (default: `127.0.0.1`). |
+| `--timeout` | `MS` | Connect timeout in milliseconds for remote hosts (default: `200`, max: `60000`). |
+| `-u`, `--udp` | | Check UDP ports instead of TCP. |
+| `-t`, `--threads` | `N` | Squadron count (default: `16`, max: `256`; larger values are clamped). |
+| `--progress` | | Print periodic progress to stderr. |
+| `-h`, `--help` | | Show the help message. |
 
 ## 🎯 Scanning remote hosts and UDP
 
@@ -82,6 +124,18 @@ means only that the **local** box can bind the port (`SOCK_DGRAM`). Remote UDP
 reachability cannot be established reliably, so `-u` is rejected together with
 a non-loopback `--host`. A datagram can be sent and silently dropped, which is
 indistinguishable from a closed port without ICMP feedback.
+
+## ⚠️ Limitations
+
+- **Privileged ports.** On POSIX, binding a port below 1024 requires root. When
+  run without root, Anthill reports those ports as **unavailable** even if
+  nothing is listening on them, so a low port can be a false negative rather
+  than a port that is genuinely in use. Run under `sudo` if you need an accurate
+  answer for the range `1-1023`.
+- **Local vs. remote, and UDP.** A local bind answers "is this port free?"
+  while a remote connect answers "is something serving this port?", and UDP is
+  local-only in v1. See [Scanning remote hosts and UDP](#-scanning-remote-hosts-and-udp)
+  above before mixing those modes.
 
 ## 📜 License
 

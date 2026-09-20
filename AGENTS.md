@@ -94,6 +94,10 @@ Keep the build warning-free.
 - `CMAKE_EXPORT_COMPILE_COMMANDS` is ON; `build/compile_commands.json` is
   generated for clangd but is git-ignored (as are `build/` and the `anthill`
   binary itself).
+- **Ports below 1024 are privileged on POSIX.** `bind()` there requires root, so
+  an unprivileged run reports those ports as unavailable even when nothing is
+  listening. Treat that as a false negative, not a busy port, when changing scan
+  logic or docs.
 
 ## Releases
 
